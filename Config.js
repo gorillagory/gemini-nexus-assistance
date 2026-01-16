@@ -3,9 +3,13 @@
 // ==========================================
 
 const CONFIG = {
-  // 1. Try to read from local Secrets.js (for Clasp push)
-  // 2. Fallback to ScriptProperties (for Cloud manual entry)
-  API_KEY: typeof SECRETS !== 'undefined' ? SECRETS.GEMINI_API_KEY : PropertiesService.getScriptProperties().getProperty('API_KEY'), 
+  // 1. Getter for API Key
+  get API_KEY() { 
+    if (typeof SECRETS !== 'undefined' && SECRETS.GEMINI_API_KEY) {
+      return SECRETS.GEMINI_API_KEY;
+    }
+    return PropertiesService.getScriptProperties().getProperty('API_KEY');
+  },
   
   SOURCE_LIST: 'Inbox', 
   
@@ -18,5 +22,6 @@ const CONFIG = {
     'Gmanage'             
   ],
 
+  // UPDATED: Back to 2.5-flash (Standard for 2026)
   MODEL_URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
 };

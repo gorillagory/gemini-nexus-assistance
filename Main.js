@@ -6,93 +6,103 @@
  * TRIGGER: Run this every 5-10 minutes (Time-driven)
  */
 function mainHeartbeat() {
-  // 1. FAST LOOP: Always process tasks
+  // 1. PHASE 1: The Manager (Clear Inbox & Organize)
   try {
     processInbox(); 
   } catch (e) {
     console.error("Heartbeat Task Error: " + e.message);
-    logHistory("System", "Heartbeat", "Task loop failed: " + e.message, "ERROR");
+    logHistory("System", "Heartbeat", "Inbox loop failed: " + e.message, "ERROR");
   }
 
-  // 2. SLOW LOOP: Process Drive Ingest (Hourly)
+  // 2. PHASE 2: The Specialist (Scan Projects & Execute Work)
+  try {
+    processActiveProjects();
+  } catch (e) {
+    console.error("Heartbeat Worker Error: " + e.message);
+  }
+
+  // 3. PHASE 3: The Digestive System (Hourly)
   if (shouldRunIngest()) {
     console.log("⏰ Hourly Ingest Cycle Starting...");
     try {
-      runIngestCycle(); // From Worker_Ingest.gs
+      runIngestCycle(); 
       updateLastIngestTime();
     } catch (e) {
-      console.error("Heartbeat Drive Error: " + e.message);
       logHistory("System", "Heartbeat", "Drive loop failed: " + e.message, "ERROR");
     }
   }
 }
 
 // ------------------------------------------
-// TRAFFIC CONTROLLER (Decides what to do)
+// PHASE 1: INBOX MANAGER
 // ------------------------------------------
 function processInbox() {
   if (typeof CONFIG === 'undefined') throw new Error("Config.gs missing");
 
   const lists = getTaskListsMap();
-  if (!lists[CONFIG.SOURCE_LIST]) { 
-    console.error(`Inbox list "${CONFIG.SOURCE_LIST}" not found.`); 
-    return; 
-  }
+  if (!lists[CONFIG.SOURCE_LIST]) return;
   
   const inboxId = lists[CONFIG.SOURCE_LIST];
   let tasks;
-  
-  try {
-    tasks = Tasks.Tasks.list(inboxId).items;
-  } catch (e) {
-    console.error("API Error: " + e.message);
-    return;
-  }
+  try { tasks = Tasks.Tasks.list(inboxId).items; } catch (e) { return; }
 
-  if (!tasks || tasks.length === 0) { 
-    console.log("Inbox empty."); 
-    return; 
-  }
+  if (!tasks || tasks.length === 0) { console.log("Inbox empty."); return; }
 
   tasks.forEach(task => {
     if (!task.title) return;
-    console.log(`Processing: ${task.title}`);
-
-    // ROUTE A: Office Work (!slide, !draft, !sheet)
-    if (task.title.toLowerCase().includes("!slide") || 
-        task.title.toLowerCase().includes("!draft") || 
-        task.title.toLowerCase().includes("!sheet") ||
-        task.title.toLowerCase().includes("!summary")) {
-      
-      handleOfficeRequest(task, inboxId); // Calls Worker_Office.gs
-
-    } 
-    // ROUTE B: Standard Organization
-    else {
-      handleTaskOrganization(task, inboxId, lists); // Calls Worker_Tasks.gs
-    }
+    console.log(`Processing Inbox: ${task.title}`);
+    
+    // ALL tasks go to the Project Manager now.
+    // The Manager will delegate file creation via subtasks flags (!draft, !slide).
+    handleTaskOrganization(task, inboxId, lists); 
   });
 }
 
 // ------------------------------------------
-// DASHBOARD & UTILS (UNIFIED MENU)
+// PHASE 2: PROJECT WORKER (THE SWEEPER)
+// ------------------------------------------
+function processActiveProjects() {
+  const lists = getTaskListsMap();
+  
+  CONFIG.TARGET_LISTS.forEach(listName => {
+    if (!lists[listName]) return;
+    const listId = lists[listName];
+    
+    let tasks;
+    try { tasks = Tasks.Tasks.list(listId).items; } catch (e) { return; }
+
+    if (!tasks || tasks.length === 0) return;
+
+    tasks.forEach(task => {
+      // Ignore completed tasks
+      if (task.status === 'completed') return;
+
+      // Check for Action Flags
+      if (task.title.includes("!draft") || 
+          task.title.includes("!slide") || 
+          task.title.includes("!sheet")) {
+            
+        console.log(`⚡ Auto-Executing Worker: ${task.title} in ${listName}`);
+        handleOfficeRequest(task, listId); // Execute & Complete
+      }
+    });
+  });
+}
+
+// ------------------------------------------
+// UTILS
 // ------------------------------------------
 
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('⚡ NEXUS')
-    // 1. Main Controls
     .addItem('🔄 Force Sync (Inbox)', 'processInbox')
-    .addItem('🧠 Force Ingest (Drive)', 'runIngestCycle')
-    .addItem('🚀 RUN EVERYTHING', 'forceRunAll')
+    .addItem('⚡ Run Project Sweeper', 'processActiveProjects')
+    .addItem('🚀 RUN EVERYTHING', 'mainHeartbeat')
     .addSeparator()
-    
-    // 2. Admin Submenu (From Admin_Health.gs)
     .addSubMenu(ui.createMenu('🏥 System Health')
         .addItem('🛠 Initialize System', 'initializeSystem')
         .addItem('🏥 Check Health Status', 'runHealthCheck'))
-        
-    // 3. Architect Submenu (From Admin_Architect.gs)
     .addSubMenu(ui.createMenu('🏗️ Architect')
         .addItem('📝 Update Manifesto', 'triggerManifestoUpdate'))
     .addToUi();
@@ -105,41 +115,10 @@ function triggerManifestoUpdate() {
   
   if (response.getSelectedButton() == ui.Button.OK) {
     const change = response.getResponseText();
-    SpreadsheetApp.getActive().toast("🏗️ Updating Architecture...", "Nexus Architect");
-    
-    // Call the new module
     if (typeof updateManifesto === 'function') {
       updateManifesto(change);
       SpreadsheetApp.getActive().toast("✅ Manifesto Updated.", "Nexus Architect");
-    } else {
-      SpreadsheetApp.getActive().toast("❌ Admin_Architect.gs missing!", "Error");
     }
-  }
-}
-
-function forceRunAll() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ss.toast("🚀 Starting Full System Sync...", "Nexus Agent");
-  
-  logHistory("System", "Manual Sync", "User initiated force sync", "INFO");
-  
-  try {
-    processInbox();
-    ss.toast("✅ Inbox Cleared. Checking Drive...", "Nexus Agent");
-    
-    runIngestCycle();
-    
-    // Update Dashboard Timestamp
-    const sheet = ss.getSheetByName("Nexus Dashboard") || ss.getActiveSheet();
-    const time = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
-    sheet.getRange("B2").setValue(`Last Run: ${time}`).setFontColor("green");
-    
-    ss.toast("✅ System Sync Complete.", "Nexus Agent");
-    logHistory("System", "Manual Sync", "Sync completed successfully", "SUCCESS");
-    
-  } catch (e) {
-    ss.toast("❌ Error: " + e.message, "Nexus Agent");
-    logHistory("System", "Manual Sync", e.message, "ERROR");
   }
 }
 

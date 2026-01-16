@@ -1,0 +1,17 @@
+# Ignore Git metadata
+.git/
+.gitignore
+
+# Ignore Node.js modules
+node_modules/
+
+# Ignore Local Tools (DO NOT UPLOAD THESE)
+bundle_context.js
+package.json
+package-lock.json
+GEM_KNOWLEDGE.md
+README.md
+
+# Ignore Clasp Settings
+.clasp.json
+.google_auth.json

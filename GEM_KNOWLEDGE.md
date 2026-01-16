@@ -1,6 +1,6 @@
 # NEXUS OS - CURRENT CODEBASE
 
-Last Updated: 2026-01-11T09:49:19.290Z
+Last Updated: 2026-01-13T21:36:44.079Z
 
 ## FILE: Admin_Architect.js
 ```javascript
@@ -240,7 +240,7 @@ function getOrCreateFolder(parent, name) {
 ## FILE: Brain.js
 ```javascript
 // ==========================================
-// MODULE: AI INTERFACE
+// MODULE: AI INTERFACE (With Retry Logic)
 // ==========================================
 
 function askGemini(prompt, systemInstruction = "You are a helpful assistant.") {
@@ -249,47 +249,61 @@ function askGemini(prompt, systemInstruction = "You are a helpful assistant.") {
     system_instruction: { parts: [{ text: systemInstruction }] }
   };
 
-  try {
-    // console.log("🤖 Asking Gemini..."); // Optional: Uncomment to debug speed
-    
-    const response = UrlFetchApp.fetch(`${CONFIG.MODEL_URL}?key=${CONFIG.API_KEY}`, {
-      method: 'post',
-      contentType: 'application/json',
-      muteHttpExceptions: true,
-      payload: JSON.stringify(payload)
-    });
-    
-    const responseCode = response.getResponseCode();
-    
-    if (responseCode !== 200) {
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    muteHttpExceptions: true,
+    payload: JSON.stringify(payload)
+  };
+
+  // RETRY LOOP (Max 3 attempts)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(`${CONFIG.MODEL_URL}?key=${CONFIG.API_KEY}`, options);
+      const responseCode = response.getResponseCode();
+      
+      // SUCCESS
+      if (responseCode === 200) {
+        const json = JSON.parse(response.getContentText());
+        if (!json.candidates || !json.candidates[0].content) return null;
+        return json.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
+      }
+      
+      // RATE LIMIT (429) - WAIT AND RETRY
+      if (responseCode === 429) {
+        console.warn(`⚠️ Quota Hit (429). Waiting 10s before retry ${attempt}...`);
+        Utilities.sleep(10000); // Wait 10 seconds
+        continue; // Try again
+      }
+
+      // OTHER ERRORS
       console.error(`❌ Gemini API Error (${responseCode}): ` + response.getContentText());
       return null;
-    }
-    
-    const json = JSON.parse(response.getContentText());
 
-    if (!json.candidates || !json.candidates[0].content) {
-      console.error("❌ Gemini returned empty candidates (Safety Filter Triggered?)");
-      return null;
+    } catch (e) {
+      console.error(`❌ Connection Failed (Attempt ${attempt}): ` + e.toString());
+      Utilities.sleep(2000);
     }
-
-    const rawText = json.candidates[0].content.parts[0].text;
-    return rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-    
-  } catch (e) {
-    console.error("❌ Gemini Connection Failure: " + e.toString());
-    return null;
   }
+  
+  return null; // Failed after 3 attempts
 }
 ```
 
 ## FILE: Config.js
 ```javascript
-// GLOBAL CONFIGURATION
+// ==========================================
+// CONFIGURATION
+// ==========================================
+
 const CONFIG = {
-  // 1. Try to read from local Secrets.js (for Clasp push)
-  // 2. Fallback to ScriptProperties (for Cloud manual entry)
-  API_KEY: typeof SECRETS !== 'undefined' ? SECRETS.GEMINI_API_KEY : PropertiesService.getScriptProperties().getProperty('API_KEY'), 
+  // 1. Getter for API Key
+  get API_KEY() { 
+    if (typeof SECRETS !== 'undefined' && SECRETS.GEMINI_API_KEY) {
+      return SECRETS.GEMINI_API_KEY;
+    }
+    return PropertiesService.getScriptProperties().getProperty('API_KEY');
+  },
   
   SOURCE_LIST: 'Inbox', 
   
@@ -302,155 +316,32 @@ const CONFIG = {
     'Gmanage'             
   ],
 
+  // UPDATED: Back to 2.5-flash (Standard for 2026)
   MODEL_URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
 };
-```
-
-## FILE: Context_Loader.js
-```javascript
-// ==========================================
-// MODULE: SYSTEM HEALTH & INIT
-// ==========================================
-
-function initializeSystem() {
-  // Direct call to avoid variable confusion
-  SpreadsheetApp.getActive().toast("🛠 Initializing Folder Structure...", "Nexus Admin");
-
-  const ROOT_NAME = "Fast Work";
-  const root = getOrCreateFolder(DriveApp.getRootFolder(), ROOT_NAME);
-
-  // Safely get target lists
-  const categories = (typeof CONFIG !== 'undefined' && CONFIG.TARGET_LISTS) ? CONFIG.TARGET_LISTS : ['iskandarzulqarnain', 'Personal', 'Bayam', 'PITSA', 'Music', 'Gmanage'];
-
-  categories.forEach(catName => {
-    const catFolder = getOrCreateFolder(root, catName);
-    const brainFolder = getOrCreateFolder(catFolder, "_Brain");
-    getOrCreateFolder(brainFolder, "_Inbox");
-    getOrCreateFolder(brainFolder, "_Archive");
-
-    const files = brainFolder.getFilesByType(MimeType.PLAIN_TEXT);
-    if (!files.hasNext()) {
-      brainFolder.createFile("README.md", `# ${catName} Context\n\n- [ ] Add Company Profile\n- [ ] Add Key Contacts`);
-    }
-  });
-
-  SpreadsheetApp.getActive().toast("✅ Initialization Complete.", "Nexus Admin");
-  runHealthCheck(); 
-}
-
-function runHealthCheck() {
-  const ss = SpreadsheetApp.getActive();
-  const sheet = ss.getActiveSheet();
-  ss.toast("🏥 Scanning System Health...", "Nexus Admin");
-
-  const START_ROW = 5;
-  const headers = [["CATEGORY", "MAIN FOLDER", "BRAIN", "INBOX", "CONTEXT FILES (.md)", "LAST ACTIVITY", "STATUS"]];
-  
-  // Clear previous report area clearly
-  sheet.getRange(START_ROW, 1, 30, 7).clearContent().setBorder(false, false, false, false, false, false);
-  
-  sheet.getRange(START_ROW, 1, 1, 7).setValues(headers).setFontWeight("bold").setBackground("#4a4a4a").setFontColor("white");
-
-  const reportData = [];
-  const ROOT_NAME = "Fast Work";
-  const rootIter = DriveApp.getFoldersByName(ROOT_NAME);
-  
-  if (!rootIter.hasNext()) {
-    SpreadsheetApp.getUi().alert("❌ Root Folder 'Fast Work' missing! Run Initialize first.");
-    return;
-  }
-  const root = rootIter.next();
-
-  const categories = (typeof CONFIG !== 'undefined' && CONFIG.TARGET_LISTS) ? CONFIG.TARGET_LISTS : ['iskandarzulqarnain', 'Personal', 'Bayam', 'PITSA', 'Music', 'Gmanage'];
-
-  categories.forEach(catName => {
-    let folderStatus = "❌";
-    let brainStatus = "❌";
-    let inboxStatus = "❌";
-    let contextCount = 0;
-    let lastActivity = "-";
-    let overallStatus = "CRITICAL";
-
-    const catFolders = root.getFoldersByName(catName);
-    if (catFolders.hasNext()) {
-      folderStatus = "✅";
-      const catFolder = catFolders.next();
-
-      const brains = catFolder.getFoldersByName("_Brain");
-      if (brains.hasNext()) {
-        brainStatus = "✅";
-        const brain = brains.next();
-
-        if (brain.getFoldersByName("_Inbox").hasNext()) inboxStatus = "✅";
-
-        const files = brain.getFiles();
-        let newestDate = new Date(0); 
-        
-        while (files.hasNext()) {
-          const f = files.next();
-          if (f.getName().endsWith(".md")) {
-            contextCount++;
-          }
-          if (f.getLastUpdated() > newestDate) {
-            newestDate = f.getLastUpdated();
-          }
-        }
-        
-        if (newestDate.getTime() > 0) {
-          lastActivity = Utilities.formatDate(newestDate, Session.getScriptTimeZone(), "dd MMM HH:mm");
-        }
-      }
-    }
-
-    if (folderStatus === "✅" && brainStatus === "✅" && inboxStatus === "✅") {
-      overallStatus = contextCount > 0 ? "ONLINE 🟢" : "NO CONTEXT 🟡";
-    }
-
-    reportData.push([catName, folderStatus, brainStatus, inboxStatus, contextCount, lastActivity, overallStatus]);
-  });
-
-  if (reportData.length > 0) {
-    const range = sheet.getRange(START_ROW + 1, 1, reportData.length, 7);
-    range.setValues(reportData);
-    range.setHorizontalAlignment("center");
-    range.setBorder(true, true, true, true, true, true);
-  }
-
-  sheet.getRange("B2").setValue(`Last Check: ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss")}`);
-  ss.toast("✅ Health Check Updated.", "Nexus Admin");
-}
-
-function getOrCreateFolder(parent, name) {
-  const folders = parent.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return parent.createFolder(name);
-}
 ```
 
 ## FILE: Logger.js
 ```javascript
 // ==========================================
-// MODULE: IMMUTABLE HISTORIAN
+// MODULE: IMMUTABLE HISTORIAN & DASHBOARD
 // ==========================================
 
 const LOG_SHEET_NAME = "History";
+const DASHBOARD_NAME = "Nexus Dashboard";
 
 /**
- * Appends a log entry to the History sheet.
- * @param {string} module - e.g., "Main", "Worker_Tasks", "Drive"
- * @param {string} action - e.g., "Task Moved", "File Created", "Error"
- * @param {string} details - Specific info (Title, URL, etc.)
- * @param {string} status - "SUCCESS", "WARNING", "ERROR"
+ * Standard System Log (The "Black Box")
+ * Appends technical logs to the 'History' tab.
  */
 function logHistory(module, action, details, status = "SUCCESS") {
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ss = getDashboardSpreadsheet();
     let sheet = ss.getSheetByName(LOG_SHEET_NAME);
 
     // 1. Create Sheet if missing
     if (!sheet) {
       sheet = ss.insertSheet(LOG_SHEET_NAME);
-      // Create Header Row
       const headers = [["TIMESTAMP", "MODULE", "ACTION", "DETAILS", "STATUS"]];
       sheet.getRange(1, 1, 1, 5).setValues(headers)
            .setFontWeight("bold")
@@ -458,18 +349,17 @@ function logHistory(module, action, details, status = "SUCCESS") {
            .setFontColor("white");
       sheet.setFrozenRows(1);
       
-      // Protect Sheet (Make it "Immutable" for editors except you/script)
-      const protection = sheet.protect().setDescription('Immutable History Log');
-      protection.setWarningOnly(true); // Warns you if you try to edit manually
+      try {
+        const protection = sheet.protect().setDescription('Immutable History Log');
+        protection.setWarningOnly(true);
+      } catch(e) {}
     }
 
-    // 2. Prepare Data
+    // 2. Append Data
     const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
-    
-    // 3. Append Row (Append Only = Immutable History)
     sheet.appendRow([timestamp, module, action, details, status]);
 
-    // 4. Color Code Status Column (Visual Cue)
+    // 3. Color Code Status
     const lastRow = sheet.getLastRow();
     const statusCell = sheet.getRange(lastRow, 5);
     
@@ -479,6 +369,69 @@ function logHistory(module, action, details, status = "SUCCESS") {
 
   } catch (e) {
     console.error("Logger Failed: " + e.message);
+  }
+}
+
+/**
+ * NEW: Project-Specific Asset Log (The "Timeline Builder")
+ * Writes to a specific tab like "Log_Bayam" or "Log_Personal".
+ * This allows for clean timeline visualization per category.
+ */
+function logProjectAsset(category, type, title, url, contextSummary) {
+  try {
+    const ss = getDashboardSpreadsheet();
+    // Sanitize sheet name (max 100 chars, no illegal chars)
+    const cleanCat = category.replace(/[^a-zA-Z0-9 ]/g, "").substring(0, 30);
+    const sheetName = `Timeline_${cleanCat}`; 
+    
+    let sheet = ss.getSheetByName(sheetName);
+
+    // Create Category Sheet if missing
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      // Timeline-ready headers
+      const headers = [["DATE", "TIME", "TYPE", "ASSET TITLE", "LINK", "CONTEXT/NOTES"]];
+      sheet.getRange(1, 1, 1, 6).setValues(headers)
+           .setFontWeight("bold")
+           .setBackground("#4285F4") // Google Blue header for Projects
+           .setFontColor("white");
+      sheet.setFrozenRows(1);
+      sheet.setColumnWidth(4, 300); // Wider Title
+      sheet.setColumnWidth(6, 300); // Wider Notes
+      
+      // Delete extra columns to keep it clean
+      if (sheet.getMaxColumns() > 6) {
+        sheet.deleteColumns(7, sheet.getMaxColumns() - 6);
+      }
+    }
+
+    const now = new Date();
+    const dateStr = Utilities.formatDate(now, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    const timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), "HH:mm");
+    
+    // Append Data
+    sheet.appendRow([dateStr, timeStr, type, title, url, contextSummary]);
+    
+  } catch (e) {
+    console.error("Project Log Failed: " + e.message);
+    logHistory("Logger", "Dashboard Error", e.message, "ERROR");
+  }
+}
+
+/**
+ * Helper: Gets the active spreadsheet or finds 'Nexus Dashboard' in Drive.
+ */
+function getDashboardSpreadsheet() {
+  try {
+    // 1. Try Active Spreadsheet (Best for bound scripts)
+    return SpreadsheetApp.getActiveSpreadsheet();
+  } catch (e) {
+    // 2. Fallback: Search Drive (For standalone scripts)
+    const files = DriveApp.getFilesByName(DASHBOARD_NAME);
+    if (files.hasNext()) return SpreadsheetApp.open(files.next());
+    
+    // 3. Fallback: Create New
+    return SpreadsheetApp.create(DASHBOARD_NAME);
   }
 }
 ```
@@ -493,93 +446,103 @@ function logHistory(module, action, details, status = "SUCCESS") {
  * TRIGGER: Run this every 5-10 minutes (Time-driven)
  */
 function mainHeartbeat() {
-  // 1. FAST LOOP: Always process tasks
+  // 1. PHASE 1: The Manager (Clear Inbox & Organize)
   try {
     processInbox(); 
   } catch (e) {
     console.error("Heartbeat Task Error: " + e.message);
-    logHistory("System", "Heartbeat", "Task loop failed: " + e.message, "ERROR");
+    logHistory("System", "Heartbeat", "Inbox loop failed: " + e.message, "ERROR");
   }
 
-  // 2. SLOW LOOP: Process Drive Ingest (Hourly)
+  // 2. PHASE 2: The Specialist (Scan Projects & Execute Work)
+  try {
+    processActiveProjects();
+  } catch (e) {
+    console.error("Heartbeat Worker Error: " + e.message);
+  }
+
+  // 3. PHASE 3: The Digestive System (Hourly)
   if (shouldRunIngest()) {
     console.log("⏰ Hourly Ingest Cycle Starting...");
     try {
-      runIngestCycle(); // From Worker_Ingest.gs
+      runIngestCycle(); 
       updateLastIngestTime();
     } catch (e) {
-      console.error("Heartbeat Drive Error: " + e.message);
       logHistory("System", "Heartbeat", "Drive loop failed: " + e.message, "ERROR");
     }
   }
 }
 
 // ------------------------------------------
-// TRAFFIC CONTROLLER (Decides what to do)
+// PHASE 1: INBOX MANAGER
 // ------------------------------------------
 function processInbox() {
   if (typeof CONFIG === 'undefined') throw new Error("Config.gs missing");
 
   const lists = getTaskListsMap();
-  if (!lists[CONFIG.SOURCE_LIST]) { 
-    console.error(`Inbox list "${CONFIG.SOURCE_LIST}" not found.`); 
-    return; 
-  }
+  if (!lists[CONFIG.SOURCE_LIST]) return;
   
   const inboxId = lists[CONFIG.SOURCE_LIST];
   let tasks;
-  
-  try {
-    tasks = Tasks.Tasks.list(inboxId).items;
-  } catch (e) {
-    console.error("API Error: " + e.message);
-    return;
-  }
+  try { tasks = Tasks.Tasks.list(inboxId).items; } catch (e) { return; }
 
-  if (!tasks || tasks.length === 0) { 
-    console.log("Inbox empty."); 
-    return; 
-  }
+  if (!tasks || tasks.length === 0) { console.log("Inbox empty."); return; }
 
   tasks.forEach(task => {
     if (!task.title) return;
-    console.log(`Processing: ${task.title}`);
-
-    // ROUTE A: Office Work (!slide, !draft, !sheet)
-    if (task.title.toLowerCase().includes("!slide") || 
-        task.title.toLowerCase().includes("!draft") || 
-        task.title.toLowerCase().includes("!sheet") ||
-        task.title.toLowerCase().includes("!summary")) {
-      
-      handleOfficeRequest(task, inboxId); // Calls Worker_Office.gs
-
-    } 
-    // ROUTE B: Standard Organization
-    else {
-      handleTaskOrganization(task, inboxId, lists); // Calls Worker_Tasks.gs
-    }
+    console.log(`Processing Inbox: ${task.title}`);
+    
+    // ALL tasks go to the Project Manager now.
+    // The Manager will delegate file creation via subtasks flags (!draft, !slide).
+    handleTaskOrganization(task, inboxId, lists); 
   });
 }
 
 // ------------------------------------------
-// DASHBOARD & UTILS (UNIFIED MENU)
+// PHASE 2: PROJECT WORKER (THE SWEEPER)
+// ------------------------------------------
+function processActiveProjects() {
+  const lists = getTaskListsMap();
+  
+  CONFIG.TARGET_LISTS.forEach(listName => {
+    if (!lists[listName]) return;
+    const listId = lists[listName];
+    
+    let tasks;
+    try { tasks = Tasks.Tasks.list(listId).items; } catch (e) { return; }
+
+    if (!tasks || tasks.length === 0) return;
+
+    tasks.forEach(task => {
+      // Ignore completed tasks
+      if (task.status === 'completed') return;
+
+      // Check for Action Flags
+      if (task.title.includes("!draft") || 
+          task.title.includes("!slide") || 
+          task.title.includes("!sheet")) {
+            
+        console.log(`⚡ Auto-Executing Worker: ${task.title} in ${listName}`);
+        handleOfficeRequest(task, listId); // Execute & Complete
+      }
+    });
+  });
+}
+
+// ------------------------------------------
+// UTILS
 // ------------------------------------------
 
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('⚡ NEXUS')
-    // 1. Main Controls
     .addItem('🔄 Force Sync (Inbox)', 'processInbox')
-    .addItem('🧠 Force Ingest (Drive)', 'runIngestCycle')
-    .addItem('🚀 RUN EVERYTHING', 'forceRunAll')
+    .addItem('⚡ Run Project Sweeper', 'processActiveProjects')
+    .addItem('🚀 RUN EVERYTHING', 'mainHeartbeat')
     .addSeparator()
-    
-    // 2. Admin Submenu (From Admin_Health.gs)
     .addSubMenu(ui.createMenu('🏥 System Health')
         .addItem('🛠 Initialize System', 'initializeSystem')
         .addItem('🏥 Check Health Status', 'runHealthCheck'))
-        
-    // 3. Architect Submenu (From Admin_Architect.gs)
     .addSubMenu(ui.createMenu('🏗️ Architect')
         .addItem('📝 Update Manifesto', 'triggerManifestoUpdate'))
     .addToUi();
@@ -592,41 +555,10 @@ function triggerManifestoUpdate() {
   
   if (response.getSelectedButton() == ui.Button.OK) {
     const change = response.getResponseText();
-    SpreadsheetApp.getActive().toast("🏗️ Updating Architecture...", "Nexus Architect");
-    
-    // Call the new module
     if (typeof updateManifesto === 'function') {
       updateManifesto(change);
       SpreadsheetApp.getActive().toast("✅ Manifesto Updated.", "Nexus Architect");
-    } else {
-      SpreadsheetApp.getActive().toast("❌ Admin_Architect.gs missing!", "Error");
     }
-  }
-}
-
-function forceRunAll() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  ss.toast("🚀 Starting Full System Sync...", "Nexus Agent");
-  
-  logHistory("System", "Manual Sync", "User initiated force sync", "INFO");
-  
-  try {
-    processInbox();
-    ss.toast("✅ Inbox Cleared. Checking Drive...", "Nexus Agent");
-    
-    runIngestCycle();
-    
-    // Update Dashboard Timestamp
-    const sheet = ss.getSheetByName("Nexus Dashboard") || ss.getActiveSheet();
-    const time = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss");
-    sheet.getRange("B2").setValue(`Last Run: ${time}`).setFontColor("green");
-    
-    ss.toast("✅ System Sync Complete.", "Nexus Agent");
-    logHistory("System", "Manual Sync", "Sync completed successfully", "SUCCESS");
-    
-  } catch (e) {
-    ss.toast("❌ Error: " + e.message, "Nexus Agent");
-    logHistory("System", "Manual Sync", e.message, "ERROR");
   }
 }
 
@@ -646,6 +578,18 @@ function getTaskListsMap() {
   allLists.forEach(l => map[l.title] = l.id);
   return map;
 }
+```
+
+## FILE: Secrets.js
+```javascript
+// ==========================================
+// 🔒 SECRETS VAULT
+// This file is ignored by Git. Do not share.
+// ==========================================
+
+const SECRETS = {
+  GEMINI_API_KEY: 'AIzaSyDVhFIRF9HQtRLT8Oh64GWlExVPQR9vrSQ'
+};
 ```
 
 ## FILE: Setup_Drive.js
@@ -794,11 +738,6 @@ function initLibrary() {
     console.log("Created _Library folder.");
   }
 }
-```
-
-## FILE: Worker_Finance.js
-```javascript
-
 ```
 
 ## FILE: Worker_Ingest.js
@@ -1105,45 +1044,138 @@ function overwriteMemoryFile(category, newContent) {
 ## FILE: Worker_Office.js
 ```javascript
 // ==========================================
-// MODULE: OFFICE WORKER
+// MODULE: OFFICE WORKER (The Creator)
 // ==========================================
 
-function handleOfficeRequest(task, inboxId) {
+function handleOfficeRequest(task, listId) {
   const title = task.title.toLowerCase();
   
-  let category = "iskandarzulqarnain";
-  CONFIG.TARGET_LISTS.forEach(list => {
-    if (title.includes(list.toLowerCase())) category = list;
-  });
-
-  // 2. Fetch "Brain" Context (Master Memory + Specific Files)
-  const masterMemory = getNexusMemory(category); // High Level
-  const fileContext = getBrainContext(category); // Low Level (Specific Docs)
-  const context = `MASTER MEMORY:\n${masterMemory}\n\nSPECIFIC FILES:\n${fileContext}`;
-  let fileUrl = "";
-  
-  if (title.includes("!slide")) {
-    fileUrl = generateSlides(task, context, category);
-  } else if (title.includes("!sheet")) {
-    fileUrl = generateSheet(task, context, category);
-  } else {
-    fileUrl = generateDoc(task, context, category);
+  // 1. FREE CHECK: Input Validation
+  // If notes are empty, AI has nothing to work with. Stop here (Save Money).
+  if (!task.notes || task.notes.length < 10) {
+    console.warn(`⚠️ Skipped: "${task.title}" - Notes too short or empty.`);
+    return;
   }
 
-  updateBrainLog(category, `Generated content: "${task.title}"`, fileUrl);
-  logHistory("Worker_Office", "Content Created", `Created ${task.title}`, "SUCCESS");
+  // 2. Identify Category
+  let category = "iskandarzulqarnain"; 
+  if (typeof CONFIG !== 'undefined' && CONFIG.TARGET_LISTS) {
+    CONFIG.TARGET_LISTS.forEach(list => {
+      if (title.includes(list.toLowerCase())) category = list;
+    });
+  }
 
-  task.notes = `✅ Content Created: ${fileUrl}\n\nOriginal: ${task.notes}`;
-  task.title = "[DONE] " + task.title;
+  // 3. FREE CHECK: Output Validation
+  // Logic: Check if we already created this file to prevent double-billing.
+  // We predict the filename based on the task title.
+  let predictedName = "";
+  if (title.includes("!slide")) predictedName = `[SLIDES] ${task.title.replace("!slide", "").trim()}`;
+  else if (title.includes("!sheet")) predictedName = `[DATA] ${task.title.replace("!sheet", "").trim()}`;
+  else predictedName = `[DRAFT] ${task.title.replace("!draft", "").trim()}`;
+
+  if (fileExistsInBrain(category, predictedName)) {
+    console.warn(`💰 Saved Money: "${predictedName}" already exists. Skipping.`);
+    // Auto-complete the task because the work is already done
+    completeTask(task, listId, `File already exists: ${predictedName}`);
+    return;
+  }
+
+  // ==========================================
+  // 💸 PAID SECTION STARTS HERE (Gemini Call)
+  // ==========================================
   
-  try { Tasks.Tasks.update(task, inboxId, task.id); } catch (e) {}
+  const masterMemory = getNexusMemory(category); 
+  const fileContext = getBrainContext(category); 
+  const styleGuide = getStyleInstruction(category); 
+
+  const context = `
+    === PROJECT MEMORY ===
+    ${masterMemory}
+    
+    === RELEVANT FILES ===
+    ${fileContext}
+    
+    === STYLE & PERSONA (${category}) ===
+    ${styleGuide}
+  `;
+
+  let fileUrl = null;
+  let docType = "DOC";
+
+  try {
+    if (title.includes("!slide")) {
+      fileUrl = generateSlides(task, context, category);
+      docType = "SLIDE";
+    } else if (title.includes("!sheet")) {
+      fileUrl = generateSheet(task, context, category);
+      docType = "SHEET";
+    } else {
+      fileUrl = generateDoc(task, context, category);
+      docType = "DOC";
+    }
+  } catch (e) {
+    console.error("Generative Error: " + e.message);
+    return;
+  }
+
+  if (!fileUrl) {
+    console.error(`❌ Generation failed for ${task.title}. Keeping task open.`);
+    return;
+  }
+
+  if (typeof logProjectAsset === 'function') {
+    logProjectAsset(category, docType, task.title, fileUrl, task.notes);
+  }
+
+  updateBrainLog(category, `Generated ${docType}: "${task.title}"`, fileUrl);
+  completeTask(task, listId, `✅ Content Created: ${fileUrl}`);
 }
 
-// --- GENERATORS ---
+// --- FREE VALIDATION HELPERS ---
+
+function fileExistsInBrain(category, fileName) {
+  try {
+    const root = DriveApp.getFoldersByName("Fast Work").next();
+    const catFolder = root.getFoldersByName(category);
+    if (!catFolder.hasNext()) return false;
+    
+    // We check the specific category folder for the file
+    // Note: This matches "exact name"
+    return catFolder.next().getFilesByName(fileName).hasNext();
+  } catch(e) { return false; }
+}
+
+function completeTask(task, listId, noteUpdate) {
+  task.notes = `${noteUpdate}\n\nOriginal: ${task.notes || ''}`;
+  task.status = 'completed'; 
+  try { Tasks.Tasks.update(task, listId, task.id); } catch (e) {}
+}
+
+// --- GENERATORS (Keep existing code below) ---
+// (Paste your existing getStyleInstruction, generateDoc, generateSlides, generateSheet functions here)
+function getStyleInstruction(category) {
+  try {
+    const root = DriveApp.getFoldersByName("Fast Work").next();
+    if (!root.getFoldersByName("_Library").hasNext()) return "Style: Professional.";
+    const lib = root.getFoldersByName("_Library").next();
+    const files = lib.getFilesByName("STYLE_MATRIX.md");
+    if (!files.hasNext()) return "Style: Standard Corporate.";
+    return files.next().getBlob().getDataAsString(); 
+  } catch (e) { return "Style: Default."; }
+}
+
 function generateDoc(task, context, category) {
-  const prompt = `Role: Assistant for ${category}. Write document: "${task.title}". Notes: "${task.notes}". Context: ${context}. Return Markdown text.`;
-  const content = askGemini(prompt, "You are a writer.");
-  
+  const prompt = `
+    ACT AS: The primary owner of the '${category}' project.
+    TASK: Write a document based on: "${task.title}".
+    NOTES: "${task.notes || 'No specific notes'}".
+    ${context}
+    INSTRUCTION: Write in the specific Tone/Style defined for ${category} in the Style Matrix.
+    OUTPUT: Return Markdown text.
+  `;
+  const content = askGemini(prompt, "You are a professional writer.");
+  if (!content) return null;
+
   const doc = DocumentApp.create(`[DRAFT] ${task.title.replace("!draft", "").trim()}`);
   doc.getBody().setText(content);
   moveFileToCategory(doc.getId(), category);
@@ -1151,79 +1183,122 @@ function generateDoc(task, context, category) {
 }
 
 function generateSlides(task, context, category) {
-  const prompt = `Role: Designer for ${category}. Create slides for: "${task.title}". Notes: "${task.notes}". Context: ${context}. Return JSON array: [{"title": "T", "bullets": ["A","B"]}]. Limit 5 slides.`;
+  const prompt = `
+    ACT AS: A Presentation Designer for '${category}'.
+    TASK: Create slide content for: "${task.title}".
+    NOTES: "${task.notes || 'No specific notes'}".
+    ${context}
+    INSTRUCTION: Adhere to the ${category} Style Matrix.
+    OUTPUT: Return JSON array ONLY: [{"title": "Slide Title", "bullets": ["Point A", "Point B"]}]. Limit 5 slides.
+  `;
   const jsonStr = askGemini(prompt, "Return JSON only.");
-  const slidesData = JSON.parse(jsonStr);
+  if (!jsonStr) return null;
   
-  const deck = SlidesApp.create(`[SLIDES] ${task.title.replace("!slide", "").trim()}`);
-  slidesData.forEach(s => {
-    const slide = deck.appendSlide(SlidesApp.PredefinedLayout.TITLE_AND_BODY);
-    try {
-      slide.getShapes()[0].getText().setText(s.title);
-      slide.getShapes()[1].getText().setText(s.bullets.join('\n'));
-    } catch(e){}
-  });
-  moveFileToCategory(deck.getId(), category);
-  return deck.getUrl();
+  try {
+    const cleanJson = jsonStr.replace(/```json/g, "").replace(/```/g, "").trim();
+    const slidesData = JSON.parse(cleanJson);
+    const deck = SlidesApp.create(`[SLIDES] ${task.title.replace("!slide", "").trim()}`);
+    slidesData.forEach(s => {
+      const slide = deck.appendSlide(SlidesApp.PredefinedLayout.TITLE_AND_BODY);
+      try {
+        slide.getShapes()[0].getText().setText(s.title);
+        slide.getShapes()[1].getText().setText(s.bullets.join('\n'));
+      } catch(e){}
+    });
+    moveFileToCategory(deck.getId(), category);
+    return deck.getUrl();
+  } catch (e) {
+    console.error("JSON Parse Error: " + e.message);
+    return null;
+  }
 }
 
 function generateSheet(task, context, category) {
-  const prompt = `Role: Analyst for ${category}. Create spreadsheet for: "${task.title}". Notes: "${task.notes}". Context: ${context}. Return JSON 2D Array.`;
+  const prompt = `
+    ACT AS: A Data Analyst for '${category}'.
+    TASK: Create a spreadsheet structure for: "${task.title}".
+    NOTES: "${task.notes || 'No specific notes'}".
+    ${context}
+    INSTRUCTION: Corporate headers.
+    OUTPUT: Return JSON 2D Array (Rows and Columns) ONLY.
+  `;
   const jsonStr = askGemini(prompt, "Return JSON only.");
-  const rows = JSON.parse(jsonStr);
-  
-  const ss = SpreadsheetApp.create(`[DATA] ${task.title.replace("!sheet", "").trim()}`);
-  const sheet = ss.getActiveSheet();
-  if (rows.length > 0) sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
-  moveFileToCategory(ss.getId(), category);
-  return ss.getUrl();
+  if (!jsonStr) return null;
+
+  try {
+    const cleanJson = jsonStr.replace(/```json/g, "").replace(/```/g, "").trim();
+    const rows = JSON.parse(cleanJson);
+    const ss = SpreadsheetApp.create(`[DATA] ${task.title.replace("!sheet", "").trim()}`);
+    const sheet = ss.getActiveSheet();
+    if (rows.length > 0) sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+    moveFileToCategory(ss.getId(), category);
+    return ss.getUrl();
+  } catch (e) {
+    console.error("JSON Parse Error: " + e.message);
+    return null;
+  }
 }
 ```
 
 ## FILE: Worker_Tasks.js
 ```javascript
 // ==========================================
-// MODULE: TASK WORKER (Context & Tagging Edition)
+// MODULE: TASK WORKER (The Project Manager)
 // ==========================================
 
 function handleTaskOrganization(task, inboxId, listMap) {
   // 1. Setup
-  const overrides = { 
+  const overrides = {
     isUrgent: task.title.includes("!urgent"),
     isProject: task.title.toLowerCase().includes("project")
   };
-  
-  // NEW: Fetch Memory to help decide the tag
-  let categoryHint = "iskandarzulqarnain";
-  CONFIG.TARGET_LISTS.forEach(l => { if(task.title.includes(l)) categoryHint = l; });
-  const masterMemory = getNexusMemory(categoryHint); 
 
-  // 2. Analyze
+  // Fetch Memory
+  let categoryHint = "iskandarzulqarnain";
+  if (CONFIG && CONFIG.TARGET_LISTS) {
+    CONFIG.TARGET_LISTS.forEach(l => { if(task.title.includes(l)) categoryHint = l; });
+  }
+  const masterMemory = getNexusMemory(categoryHint);
+
+  // 2. Analyze & Plan
   const prompt = `
-    Act as a Project Manager. Plan this task: "${task.title}"
+    Act as a Senior Project Manager. Plan this request: "${task.title}"
     Notes: "${task.notes || ''}"
-    
+
     === MEMORY CONTEXT ===
     ${masterMemory.substring(0, 1500)}
+
+    === LIST DEFINITIONS ===
+    - 'Bayam': Work, Technical, Cloud, Corporate.
+    - 'PITSA': NGO, Grants, Community.
+    - 'Music': Creative, Arts.
+    - 'Personal': Family, Health, Home.
+    - 'iskandarzulqarnain': General/Default.
     ======================
 
     INSTRUCTIONS:
-    1. Categorize into: ${JSON.stringify(CONFIG.TARGET_LISTS)}.
-    2. Generate a "project_tag": A short, bracketed identifier like [Bayam VDP] or [PITSA PKNS] or [Music].
-    3. Create "completion_plan": 3-6 steps.
-    
-    Return JSON ONLY: 
-    { 
-      "targetList": "List Name", 
-      "cleanTitle": "Title", 
-      "project_tag": "[TAG]", 
-      "durationMinutes": 60, 
-      "strategy": "Strategy", 
-      "completion_plan": ["Step 1", "Step 2"], 
-      "shouldCalendar": boolean 
+    1. Categorize into ONE of: ${JSON.stringify(CONFIG.TARGET_LISTS)}.
+    2. Generate a "project_tag": e.g. [Bayam Cloud].
+    3. Create "completion_plan" (3-6 steps).
+
+    CRITICAL - DELEGATION RULES:
+    - If a step requires writing a document, append ' !draft'.
+    - If a step requires a presentation, append ' !slide'.
+    - If a step requires data/finance, append ' !sheet'.
+    - RULE: ONLY GENERATE ONE FILE PER TYPE. Consolidate similar outputs.
+
+    Return JSON ONLY:
+    {
+      "targetList": "List Name",
+      "cleanTitle": "Title",
+      "project_tag": "[TAG]",
+      "durationMinutes": 60,
+      "strategy": "Strategy",
+      "completion_plan": ["Step 1", "Step 2"],
+      "shouldCalendar": boolean
     }
   `;
-  
+
   const analysisStr = askGemini(prompt, "Return JSON only.");
   if (!analysisStr) return;
   const analysis = JSON.parse(analysisStr);
@@ -1234,58 +1309,68 @@ function handleTaskOrganization(task, inboxId, listMap) {
     try { driveLink = createProjectFolder(analysis.targetList, analysis.cleanTitle, analysis); } catch (e) {}
   }
 
-  // 4. Create Parent Task
-  const targetListName = listMap[analysis.targetList] ? analysis.targetList : CONFIG.TARGET_LISTS[0];
+  // 4. Robust List Matching
+  let targetListName = CONFIG.TARGET_LISTS[0];
+  const cleanTarget = analysis.targetList.toLowerCase().trim();
+  Object.keys(listMap).forEach(key => {
+    if (key.toLowerCase().trim() === cleanTarget) targetListName = key;
+  });
   const targetId = listMap[targetListName];
+
+  // 5. Create Parent Task
   const parentNote = `🏷️ Context: ${analysis.project_tag}\n🧠 Strategy: ${analysis.strategy}\n` + (driveLink ? `📂 Workspace: ${driveLink}\n` : "") + `\nOriginal: ${task.notes || ''}`;
 
   const parentTask = Tasks.Tasks.insert({
-    title: `${analysis.project_tag} ${analysis.cleanTitle}`, // Add tag to main title too? Optional.
+    title: `${analysis.project_tag} ${analysis.cleanTitle}`,
     notes: parentNote,
     due: new Date().toISOString()
   }, targetId);
 
-  // 5. Create Subtasks (With INHERITED TAGS)
-  Utilities.sleep(1000); 
+  // 6. Create Subtasks (NOW WITH CONTEXT!)
+  Utilities.sleep(1000);
   if (analysis.completion_plan) {
     analysis.completion_plan.forEach(step => {
       try {
-        // HERE IS THE MAGIC: We prepend the tag to every subtask
         const taggedTitle = `${analysis.project_tag} ${step}`;
-        
-        const child = Tasks.Tasks.insert({ title: taggedTitle }, targetId);
+        // CHANGED: We now pass the 'parentNote' to the child so the Worker knows the context!
+        const child = Tasks.Tasks.insert({
+          title: taggedTitle,
+          notes: parentNote // <--- THIS IS THE CRITICAL FIX
+        }, targetId);
         Tasks.Tasks.move(targetId, child.id, { parent: parentTask.id });
       } catch (e) {}
     });
   }
 
-  // 6. Calendar
+  // 7. Calendar
   if (analysis.shouldCalendar) createCalendarEvent(analysis.cleanTitle, analysis.durationMinutes, targetListName);
 
-  // 7. Cleanup & Learn
+  // 8. Cleanup
   try {
     Tasks.Tasks.remove(inboxId, task.id);
-    if (analysis.durationMinutes >= 30) { 
-       updateNexusMemory(analysis.targetList, analysis.cleanTitle, analysis.strategy, driveLink || "Task List");
+    if (analysis.durationMinutes >= 30) {
+       updateNexusMemory(targetListName, analysis.cleanTitle, analysis.strategy, driveLink || "Task List");
     }
-    logHistory("Worker_Tasks", "Task Organized", `Tagged ${analysis.cleanTitle} as ${analysis.project_tag}`, "SUCCESS");
+    logHistory("Worker_Tasks", "Plan Executed", `Moved ${analysis.cleanTitle} to ${targetListName}`, "SUCCESS");
   } catch (e) {
     logHistory("Worker_Tasks", "Error", e.message, "ERROR");
   }
 }
 
 function createCalendarEvent(title, duration, listName) {
-  let cal;
-  const specificCalendars = CalendarApp.getCalendarsByName(listName);
-  if (specificCalendars.length > 0) cal = specificCalendars[0];
-  else cal = CalendarApp.getDefaultCalendar();
+  try {
+    let cal;
+    const specificCalendars = CalendarApp.getCalendarsByName(listName);
+    if (specificCalendars.length > 0) cal = specificCalendars[0];
+    else cal = CalendarApp.getDefaultCalendar();
 
-  const start = new Date();
-  start.setHours(start.getHours() + 1, 0, 0, 0);
-  const end = new Date(start);
-  end.setMinutes(start.getMinutes() + (duration || 60));
-  
-  cal.createEvent(`[Focus] ${title}`, start, end, { description: "Auto-scheduled by Nexus" });
+    const start = new Date();
+    start.setHours(start.getHours() + 1, 0, 0, 0);
+    const end = new Date(start);
+    end.setMinutes(start.getMinutes() + (duration || 60));
+
+    cal.createEvent(`[Focus] ${title}`, start, end, { description: "Auto-scheduled by Nexus" });
+  } catch(e) {}
 }
 ```
 
