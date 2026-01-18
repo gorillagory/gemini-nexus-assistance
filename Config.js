@@ -3,7 +3,8 @@
 // ==========================================
 
 const CONFIG = {
-  get API_KEY() { 
+ get API_KEY() { 
+    // This part is a check, NOT a declaration
     if (typeof SECRETS !== 'undefined' && SECRETS.GEMINI_API_KEY) {
       return SECRETS.GEMINI_API_KEY;
     }
