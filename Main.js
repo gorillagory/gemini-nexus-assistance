@@ -102,6 +102,7 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(ui.createMenu('🏥 System Health')
         .addItem('🛠 Initialize System', 'initializeSystem')
+        .addItem('📂 Sync Task Lists to Drive', 'syncFoldersWithTasks') // <--- NEW
         .addItem('🏥 Check Health Status', 'runHealthCheck'))
     .addSubMenu(ui.createMenu('🏗️ Architect')
         .addItem('📝 Update Manifesto', 'triggerManifestoUpdate'))

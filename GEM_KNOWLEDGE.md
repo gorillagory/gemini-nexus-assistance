@@ -1,6 +1,6 @@
 # NEXUS OS - CURRENT CODEBASE
 
-Last Updated: 2026-01-13T21:36:44.079Z
+Last Updated: 2026-01-18T08:47:38.617Z
 
 ## FILE: Admin_Architect.js
 ```javascript
@@ -119,35 +119,107 @@ function overwriteManifesto(newContent) {
 ## FILE: Admin_Health.js
 ```javascript
 // ==========================================
-// MODULE: SYSTEM HEALTH & INIT
+// MODULE: SYSTEM HEALTH & DYNAMIC INIT
 // ==========================================
 
+/**
+ * THE BIG GREEN BUTTON: Use this to set up a new account or fix structure.
+ */
 function initializeSystem() {
-  // Direct call to avoid variable confusion
-  SpreadsheetApp.getActive().toast("🛠 Initializing Folder Structure...", "Nexus Admin");
+  const ss = SpreadsheetApp.getActive();
+  ss.toast("🛠 Initializing Nexus Ecosystem...", "Nexus Admin");
 
+  // 1. Setup Spreadsheet Control Panel
+  ensureSettingsSheet();
+
+  // 2. Setup Drive Root
   const ROOT_NAME = "Fast Work";
   const root = getOrCreateFolder(DriveApp.getRootFolder(), ROOT_NAME);
 
-  // Safely get target lists
-  const categories = (typeof CONFIG !== 'undefined' && CONFIG.TARGET_LISTS) ? CONFIG.TARGET_LISTS : ['iskandarzulqarnain', 'Personal', 'Bayam', 'PITSA', 'Music', 'Gmanage'];
+  // 3. Sync Task Lists to Drive
+  syncFoldersWithTasks();
 
-  categories.forEach(catName => {
-    const catFolder = getOrCreateFolder(root, catName);
+  ss.toast("✅ Initialization Complete.", "Nexus Admin");
+}
+
+/**
+ * Creates the 'Settings' tab if missing.
+ */
+function ensureSettingsSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("Settings");
+  
+  if (!sheet) {
+    sheet = ss.insertSheet("Settings");
+    const headers = [["TASK LIST NAME", "CATEGORY", "CONTEXT / TAGS (Keywords for AI)"]];
+    sheet.getRange(1, 1, 1, 3).setValues(headers)
+         .setFontWeight("bold")
+         .setBackground("#4285F4")
+         .setFontColor("white");
+    
+    // Pre-populate with your known lists
+    const defaults = [
+      ["Bayam", "WORK", "Technical, Cloud Architecture, sange-nexus"],
+      ["Music", "PERSONAL", "Creative, Guitar, Songwriting"],
+      ["PITSA", "NGO", "Grants, Community, PKNS"],
+      ["Personal", "PERSONAL", "Family, Health, Home"],
+      ["iskandarzulqarnain", "GENERAL", "Default context"]
+    ];
+    sheet.getRange(2, 1, defaults.length, 3).setValues(defaults);
+    sheet.setFrozenRows(1);
+    sheet.autoResizeColumns(1, 3);
+  }
+}
+
+/**
+ * AUTO-SYNC: Scans Google Tasks and ensures BOTH Drive and Settings are updated.
+ */
+function syncFoldersWithTasks() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const settingsSheet = ss.getSheetByName("Settings");
+  const ui = SpreadsheetApp.getActive();
+  
+  ui.toast("🔍 Syncing Task Lists with Nexus...", "Nexus Admin");
+
+  const ROOT_NAME = "Fast Work";
+  const root = getOrCreateFolder(DriveApp.getRootFolder(), ROOT_NAME);
+  
+  // 1. Get all lists from Google Tasks
+  const currentLists = Tasks.Tasklists.list().items;
+  
+  // 2. Get currently tracked lists in Settings sheet (Column A)
+  const trackedLists = settingsSheet.getDataRange().getValues().map(row => row[0]);
+
+  currentLists.forEach(list => {
+    if (list.title === CONFIG.SOURCE_LIST) return;
+
+    // A. Ensure Folder Structure exists
+    const catFolder = getOrCreateFolder(root, list.title);
     const brainFolder = getOrCreateFolder(catFolder, "_Brain");
     getOrCreateFolder(brainFolder, "_Inbox");
     getOrCreateFolder(brainFolder, "_Archive");
 
-    const files = brainFolder.getFilesByType(MimeType.PLAIN_TEXT);
-    if (!files.hasNext()) {
-      brainFolder.createFile("README.md", `# ${catName} Context\n\n- [ ] Add Company Profile\n- [ ] Add Key Contacts`);
+    // B. Auto-populate Settings sheet if list is new
+    if (trackedLists.indexOf(list.title) === -1) {
+      console.log(`✨ Found new list: ${list.title}. Adding to Settings.`);
+      settingsSheet.appendRow([list.title, "UNCATEGORIZED", "New list found. Add context keywords here."]);
+      
+      // Highlight the new row so you see it
+      const lastRow = settingsSheet.getLastRow();
+      settingsSheet.getRange(lastRow, 1, 1, 3).setBackground("#fff2cc"); 
     }
   });
 
-  SpreadsheetApp.getActive().toast("✅ Initialization Complete.", "Nexus Admin");
-  runHealthCheck(); 
+  ui.toast("✅ Sync Complete. New lists added to Settings.", "Nexus Admin");
 }
 
+function getOrCreateFolder(parent, name) {
+  const folders = parent.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return parent.createFolder(name);
+}
+
+// ... (Keep existing runHealthCheck function)
 function runHealthCheck() {
   const ss = SpreadsheetApp.getActive();
   const sheet = ss.getActiveSheet();
@@ -229,12 +301,6 @@ function runHealthCheck() {
   sheet.getRange("B2").setValue(`Last Check: ${Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HH:mm:ss")}`);
   ss.toast("✅ Health Check Updated.", "Nexus Admin");
 }
-
-function getOrCreateFolder(parent, name) {
-  const folders = parent.getFoldersByName(name);
-  if (folders.hasNext()) return folders.next();
-  return parent.createFolder(name);
-}
 ```
 
 ## FILE: Brain.js
@@ -293,30 +359,51 @@ function askGemini(prompt, systemInstruction = "You are a helpful assistant.") {
 ## FILE: Config.js
 ```javascript
 // ==========================================
-// CONFIGURATION
+// CONFIGURATION (Sheet-Driven Edition)
 // ==========================================
 
 const CONFIG = {
-  // 1. Getter for API Key
   get API_KEY() { 
     if (typeof SECRETS !== 'undefined' && SECRETS.GEMINI_API_KEY) {
       return SECRETS.GEMINI_API_KEY;
     }
     return PropertiesService.getScriptProperties().getProperty('API_KEY');
   },
-  
-  SOURCE_LIST: 'Inbox', 
-  
-  TARGET_LISTS: [
-    'iskandarzulqarnain', 
-    'Personal',           
-    'Bayam',              
-    'PITSA',              
-    'Music',              
-    'Gmanage'             
-  ],
 
-  // UPDATED: Back to 2.5-flash (Standard for 2026)
+  SOURCE_LIST: 'Inbox', 
+
+  /**
+   * DYNAMIC: Reads the 'Settings' sheet to categorize lists.
+   * This allows you to manage AI routing without touching code.
+   */
+  get LIST_MAP() {
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      let sheet = ss.getSheetByName("Settings");
+      
+      // If sheet doesn't exist, we fallback to a safe empty object
+      if (!sheet) return {}; 
+
+      const data = sheet.getDataRange().getValues();
+      const map = {};
+      
+      // Skip header row [0], build map from rows
+      for (let i = 1; i < data.length; i++) {
+        const [name, cat, tags] = data[i];
+        if (name) map[name] = { category: cat, context: tags };
+      }
+      return map;
+    } catch (e) {
+      console.error("Config Error: " + e.message);
+      return {};
+    }
+  },
+
+  // Helper to get just the names of lists currently being tracked in Settings
+  get TARGET_LISTS() {
+    return Object.keys(this.LIST_MAP);
+  },
+
   MODEL_URL: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
 };
 ```
@@ -542,6 +629,7 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(ui.createMenu('🏥 System Health')
         .addItem('🛠 Initialize System', 'initializeSystem')
+        .addItem('📂 Sync Task Lists to Drive', 'syncFoldersWithTasks') // <--- NEW
         .addItem('🏥 Check Health Status', 'runHealthCheck'))
     .addSubMenu(ui.createMenu('🏗️ Architect')
         .addItem('📝 Update Manifesto', 'triggerManifestoUpdate'))
@@ -588,7 +676,7 @@ function getTaskListsMap() {
 // ==========================================
 
 const SECRETS = {
-  GEMINI_API_KEY: 'AIzaSyDVhFIRF9HQtRLT8Oh64GWlExVPQR9vrSQ'
+  GEMINI_API_KEY: 'AIzaSyCpebhDyME7nfZhjS4Q9jexa3e8IJubMfA'
 };
 ```
 
@@ -1243,7 +1331,7 @@ function generateSheet(task, context, category) {
 ## FILE: Worker_Tasks.js
 ```javascript
 // ==========================================
-// MODULE: TASK WORKER (The Project Manager)
+// MODULE: TASK WORKER (Dynamic Dictionary Edition)
 // ==========================================
 
 function handleTaskOrganization(task, inboxId, listMap) {
@@ -1253,39 +1341,30 @@ function handleTaskOrganization(task, inboxId, listMap) {
     isProject: task.title.toLowerCase().includes("project")
   };
 
-  // Fetch Memory
+  // 2. FETCH LIVE CONTEXT FROM SETTINGS SHEET
+  const liveMap = CONFIG.LIST_MAP;
+  const listDefinitions = Object.entries(liveMap)
+    .map(([name, info]) => `- '${name}': (${info.category}) ${info.context}`)
+    .join('\n');
+
   let categoryHint = "iskandarzulqarnain";
-  if (CONFIG && CONFIG.TARGET_LISTS) {
-    CONFIG.TARGET_LISTS.forEach(l => { if(task.title.includes(l)) categoryHint = l; });
-  }
+  Object.keys(liveMap).forEach(l => { if(task.title.includes(l)) categoryHint = l; });
   const masterMemory = getNexusMemory(categoryHint);
 
-  // 2. Analyze & Plan
+  // 3. Analyze & Plan
   const prompt = `
     Act as a Senior Project Manager. Plan this request: "${task.title}"
     Notes: "${task.notes || ''}"
 
-    === MEMORY CONTEXT ===
-    ${masterMemory.substring(0, 1500)}
-
-    === LIST DEFINITIONS ===
-    - 'Bayam': Work, Technical, Cloud, Corporate.
-    - 'PITSA': NGO, Grants, Community.
-    - 'Music': Creative, Arts.
-    - 'Personal': Family, Health, Home.
-    - 'iskandarzulqarnain': General/Default.
-    ======================
+    === DYNAMIC LIST DICTIONARY (Categorization Rules) ===
+    ${listDefinitions}
+    =====================================================
 
     INSTRUCTIONS:
-    1. Categorize into ONE of: ${JSON.stringify(CONFIG.TARGET_LISTS)}.
+    1. Categorize into the most appropriate list from the dictionary.
     2. Generate a "project_tag": e.g. [Bayam Cloud].
     3. Create "completion_plan" (3-6 steps).
-
-    CRITICAL - DELEGATION RULES:
-    - If a step requires writing a document, append ' !draft'.
-    - If a step requires a presentation, append ' !slide'.
-    - If a step requires data/finance, append ' !sheet'.
-    - RULE: ONLY GENERATE ONE FILE PER TYPE. Consolidate similar outputs.
+    4. Append ' !draft', ' !slide', or ' !sheet' to steps requiring file generation.
 
     Return JSON ONLY:
     {
@@ -1303,21 +1382,17 @@ function handleTaskOrganization(task, inboxId, listMap) {
   if (!analysisStr) return;
   const analysis = JSON.parse(analysisStr);
 
-  // 3. Drive Logic
+  // 4. Drive Logic
   let driveLink = "";
   if (analysis.durationMinutes >= 30 || overrides.isProject) {
     try { driveLink = createProjectFolder(analysis.targetList, analysis.cleanTitle, analysis); } catch (e) {}
   }
 
-  // 4. Robust List Matching
-  let targetListName = CONFIG.TARGET_LISTS[0];
-  const cleanTarget = analysis.targetList.toLowerCase().trim();
-  Object.keys(listMap).forEach(key => {
-    if (key.toLowerCase().trim() === cleanTarget) targetListName = key;
-  });
-  const targetId = listMap[targetListName];
+  // 5. Robust List Matching
+  let targetListName = analysis.targetList;
+  const targetId = listMap[targetListName] || listMap['iskandarzulqarnain'];
 
-  // 5. Create Parent Task
+  // 6. Create Parent Task
   const parentNote = `🏷️ Context: ${analysis.project_tag}\n🧠 Strategy: ${analysis.strategy}\n` + (driveLink ? `📂 Workspace: ${driveLink}\n` : "") + `\nOriginal: ${task.notes || ''}`;
 
   const parentTask = Tasks.Tasks.insert({
@@ -1326,36 +1401,30 @@ function handleTaskOrganization(task, inboxId, listMap) {
     due: new Date().toISOString()
   }, targetId);
 
-  // 6. Create Subtasks (NOW WITH CONTEXT!)
-  Utilities.sleep(1000);
+  // 7. Create Subtasks with Context
   if (analysis.completion_plan) {
     analysis.completion_plan.forEach(step => {
       try {
         const taggedTitle = `${analysis.project_tag} ${step}`;
-        // CHANGED: We now pass the 'parentNote' to the child so the Worker knows the context!
-        const child = Tasks.Tasks.insert({
+        const child = Tasks.Tasks.insert({ 
           title: taggedTitle,
-          notes: parentNote // <--- THIS IS THE CRITICAL FIX
+          notes: parentNote 
         }, targetId);
         Tasks.Tasks.move(targetId, child.id, { parent: parentTask.id });
       } catch (e) {}
     });
   }
 
-  // 7. Calendar
-  if (analysis.shouldCalendar) createCalendarEvent(analysis.cleanTitle, analysis.durationMinutes, targetListName);
-
-  // 8. Cleanup
+  // 8. Cleanup & Log
   try {
     Tasks.Tasks.remove(inboxId, task.id);
-    if (analysis.durationMinutes >= 30) {
-       updateNexusMemory(targetListName, analysis.cleanTitle, analysis.strategy, driveLink || "Task List");
-    }
     logHistory("Worker_Tasks", "Plan Executed", `Moved ${analysis.cleanTitle} to ${targetListName}`, "SUCCESS");
   } catch (e) {
     logHistory("Worker_Tasks", "Error", e.message, "ERROR");
   }
 }
+
+// ... (Keep createCalendarEvent)
 
 function createCalendarEvent(title, duration, listName) {
   try {

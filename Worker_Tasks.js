@@ -1,5 +1,5 @@
 // ==========================================
-// MODULE: TASK WORKER (The Project Manager)
+// MODULE: TASK WORKER (Dynamic Dictionary Edition)
 // ==========================================
 
 function handleTaskOrganization(task, inboxId, listMap) {
@@ -9,39 +9,30 @@ function handleTaskOrganization(task, inboxId, listMap) {
     isProject: task.title.toLowerCase().includes("project")
   };
 
-  // Fetch Memory
+  // 2. FETCH LIVE CONTEXT FROM SETTINGS SHEET
+  const liveMap = CONFIG.LIST_MAP;
+  const listDefinitions = Object.entries(liveMap)
+    .map(([name, info]) => `- '${name}': (${info.category}) ${info.context}`)
+    .join('\n');
+
   let categoryHint = "iskandarzulqarnain";
-  if (CONFIG && CONFIG.TARGET_LISTS) {
-    CONFIG.TARGET_LISTS.forEach(l => { if(task.title.includes(l)) categoryHint = l; });
-  }
+  Object.keys(liveMap).forEach(l => { if(task.title.includes(l)) categoryHint = l; });
   const masterMemory = getNexusMemory(categoryHint);
 
-  // 2. Analyze & Plan
+  // 3. Analyze & Plan
   const prompt = `
     Act as a Senior Project Manager. Plan this request: "${task.title}"
     Notes: "${task.notes || ''}"
 
-    === MEMORY CONTEXT ===
-    ${masterMemory.substring(0, 1500)}
-
-    === LIST DEFINITIONS ===
-    - 'Bayam': Work, Technical, Cloud, Corporate.
-    - 'PITSA': NGO, Grants, Community.
-    - 'Music': Creative, Arts.
-    - 'Personal': Family, Health, Home.
-    - 'iskandarzulqarnain': General/Default.
-    ======================
+    === DYNAMIC LIST DICTIONARY (Categorization Rules) ===
+    ${listDefinitions}
+    =====================================================
 
     INSTRUCTIONS:
-    1. Categorize into ONE of: ${JSON.stringify(CONFIG.TARGET_LISTS)}.
+    1. Categorize into the most appropriate list from the dictionary.
     2. Generate a "project_tag": e.g. [Bayam Cloud].
     3. Create "completion_plan" (3-6 steps).
-
-    CRITICAL - DELEGATION RULES:
-    - If a step requires writing a document, append ' !draft'.
-    - If a step requires a presentation, append ' !slide'.
-    - If a step requires data/finance, append ' !sheet'.
-    - RULE: ONLY GENERATE ONE FILE PER TYPE. Consolidate similar outputs.
+    4. Append ' !draft', ' !slide', or ' !sheet' to steps requiring file generation.
 
     Return JSON ONLY:
     {
@@ -59,21 +50,17 @@ function handleTaskOrganization(task, inboxId, listMap) {
   if (!analysisStr) return;
   const analysis = JSON.parse(analysisStr);
 
-  // 3. Drive Logic
+  // 4. Drive Logic
   let driveLink = "";
   if (analysis.durationMinutes >= 30 || overrides.isProject) {
     try { driveLink = createProjectFolder(analysis.targetList, analysis.cleanTitle, analysis); } catch (e) {}
   }
 
-  // 4. Robust List Matching
-  let targetListName = CONFIG.TARGET_LISTS[0];
-  const cleanTarget = analysis.targetList.toLowerCase().trim();
-  Object.keys(listMap).forEach(key => {
-    if (key.toLowerCase().trim() === cleanTarget) targetListName = key;
-  });
-  const targetId = listMap[targetListName];
+  // 5. Robust List Matching
+  let targetListName = analysis.targetList;
+  const targetId = listMap[targetListName] || listMap['iskandarzulqarnain'];
 
-  // 5. Create Parent Task
+  // 6. Create Parent Task
   const parentNote = `🏷️ Context: ${analysis.project_tag}\n🧠 Strategy: ${analysis.strategy}\n` + (driveLink ? `📂 Workspace: ${driveLink}\n` : "") + `\nOriginal: ${task.notes || ''}`;
 
   const parentTask = Tasks.Tasks.insert({
@@ -82,36 +69,30 @@ function handleTaskOrganization(task, inboxId, listMap) {
     due: new Date().toISOString()
   }, targetId);
 
-  // 6. Create Subtasks (NOW WITH CONTEXT!)
-  Utilities.sleep(1000);
+  // 7. Create Subtasks with Context
   if (analysis.completion_plan) {
     analysis.completion_plan.forEach(step => {
       try {
         const taggedTitle = `${analysis.project_tag} ${step}`;
-        // CHANGED: We now pass the 'parentNote' to the child so the Worker knows the context!
-        const child = Tasks.Tasks.insert({
+        const child = Tasks.Tasks.insert({ 
           title: taggedTitle,
-          notes: parentNote // <--- THIS IS THE CRITICAL FIX
+          notes: parentNote 
         }, targetId);
         Tasks.Tasks.move(targetId, child.id, { parent: parentTask.id });
       } catch (e) {}
     });
   }
 
-  // 7. Calendar
-  if (analysis.shouldCalendar) createCalendarEvent(analysis.cleanTitle, analysis.durationMinutes, targetListName);
-
-  // 8. Cleanup
+  // 8. Cleanup & Log
   try {
     Tasks.Tasks.remove(inboxId, task.id);
-    if (analysis.durationMinutes >= 30) {
-       updateNexusMemory(targetListName, analysis.cleanTitle, analysis.strategy, driveLink || "Task List");
-    }
     logHistory("Worker_Tasks", "Plan Executed", `Moved ${analysis.cleanTitle} to ${targetListName}`, "SUCCESS");
   } catch (e) {
     logHistory("Worker_Tasks", "Error", e.message, "ERROR");
   }
 }
+
+// ... (Keep createCalendarEvent)
 
 function createCalendarEvent(title, duration, listName) {
   try {
